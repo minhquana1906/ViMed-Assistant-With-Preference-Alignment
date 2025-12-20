@@ -3,8 +3,8 @@ services:
     image: ghcr.io/open-webui/open-webui:main
     container_name: vimed-openwebui
     environment:
-      - OPENAI_API_BASE_URL=http://120.238.149.198:47585/v1
-      - OPENAI_API_KEY=b6b494a1cb3a8ea9053c4198c196eb1eb6bea9f5e130b933a20c97b300d8c51d
+      - OPENAI_API_BASE_URL=http://120.238.149.198:47443/v1
+      - OPENAI_API_KEY=f386a036a1c3b8e70d524520e838cc1c7c0a55da03a8785c717c860e8f39370a
       - DEFAULT_MODELS=quannguyen204/vimed-llama3.2-3b-dpo-sigmoid-v1-merged
       - WEBUI_AUTH=true
       - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY:-admin}
