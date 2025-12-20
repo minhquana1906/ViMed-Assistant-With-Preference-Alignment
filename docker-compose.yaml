@@ -1,0 +1,59 @@
+services:
+  openwebui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: vimed-openwebui
+    environment:
+      - OPENAI_API_BASE_URL=http://vllm:8000/v1
+      - OPENAI_API_KEY=vllm
+      - DEFAULT_MODELS=quannguyen204/vimed-llama3.2-3b-dpo-sigmoid-v1-merged
+      - WEBUI_AUTH=true
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY:-admin}
+      - ENABLE_SIGNUP=true
+      - ENABLE_LOGIN_FORM=true
+    volumes:
+      - ./database:/app/backend/data
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    networks:
+      - vimed-network
+
+  vllm:
+    image: vllm/vllm-openai:v0.8.5
+    container_name: vimed-vllm
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - HF_TOKEN=${HF_TOKEN}
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - ~/.cache/vllm:/root/.cache/vllm
+      - ./entrypoint.sh:/vllm-workspace/entrypoint.sh
+    ports:
+      - "8000:8000"
+    entrypoint: ["/bin/bash", "/vllm-workspace/entrypoint.sh"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    restart: unless-stopped
+    networks:
+      - vimed-network
+
+volumes:
+  openwebui-data:
+    name: vimed-openwebui-data
+
+networks:
+  vimed-network:
+    name: vimed-network
+    external: true
