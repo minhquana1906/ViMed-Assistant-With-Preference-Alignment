@@ -1,9 +1,4 @@
 """
-Fast Synthetic Medical Data Generation for ViMed-Assistant.
-
-Optimized for speed with basic guardrails only.
-Updated with Realtime Checkpointing & Length Control.
-
 Usage:
     uv run scripts/generate_synthetic_data.py \
     --provider deepseek \
@@ -20,13 +15,6 @@ Usage:
     --max-concurrent 20 \
     --max-tokens 1536 \
     --model gpt-4o-mini 
-    
-    # Use sync mode if async has connection issues:
-    uv run scripts/generate_synthetic_data.py \
-    --provider deepseek \
-    --num-samples 100 \
-    --batch-size 5 \
-    --sync-mode
 """
 
 import argparse
@@ -63,16 +51,12 @@ logger = logging.getLogger(__name__)
 # ==============================================================================
 @dataclass
 class GenerationConfig:
-    """Configuration for synthetic data generation."""
 
     provider: Literal["openai", "deepseek"] = "deepseek"
     model: str = "deepseek-chat"
     api_key: str = None
     base_url: str | None = None
 
-    # Optimal values:
-    # - batch_size: 5-10 Q&A per request (LLM generates quality content)
-    # - max_concurrent: 10-20 (API rate limit dependent)
     batch_size: int = 5  # Q&A pairs per API call (optimal: 5-10)
     max_concurrent_requests: int = 15  # Concurrent API requests
     temperature: float = 1.0
@@ -169,7 +153,6 @@ MEDICAL_TOPICS = [
 
 SYSTEM_PROMPT = """Bạn là một trợ lý y tế ảo thông minh, với vai trò là một bác sĩ tư vấn trực tuyến chuyên nghiệp và tận tâm. Nhiệm vụ của bạn là giải đáp thắc mắc, câu hỏi về chủ đề y tế. Câu trả lời cần mang tính định hướng, giải thích nguyên nhân có thể, không được thay thế chẩn đoán của bệnh viện và phải luôn khuyên người dùng đến cơ sở y tế để có chẩn đoán chính xác."""
 
-# Lưu ý: Bạn có thể sửa prompt dưới đây để yêu cầu cụ thể độ dài (VD: "Trả lời chi tiết khoảng 300 từ")
 GENERATION_PROMPT = """Tạo {num_pairs} cặp câu hỏi-trả lời y tế về: {topic} - {subtopic}
 
 ## YÊU CẦU
@@ -186,7 +169,7 @@ GENERATION_PROMPT = """Tạo {num_pairs} cặp câu hỏi-trả lời y tế v�
 
 
 # ==============================================================================
-# Basic Guardrails (fast check)
+# Basic Guardrails
 # ==============================================================================
 HARMFUL_PATTERNS = [
     r"tự\s*tử|tự\s*sát",
@@ -206,21 +189,17 @@ REQUIRED_PATTERNS = [
 
 
 def quick_validate(answer: str) -> bool:
-    """Fast validation - only critical checks."""
     if len(answer) < 30 or len(answer) > 5000:
         return False
 
-    # Check harmful patterns
     for pattern in HARMFUL_PATTERNS:
         if re.search(pattern, answer, re.IGNORECASE):
             return False
 
-    # Check at least one required pattern (more lenient)
     for pattern in REQUIRED_PATTERNS:
         if re.search(pattern, answer, re.IGNORECASE):
             return True
 
-    # Accept anyway if answer is reasonably long (likely contains implicit advice)
     if len(answer) > 200:
         return True
 
@@ -231,12 +210,10 @@ def quick_validate(answer: str) -> bool:
 # Generator
 # ==============================================================================
 class FastSyntheticGenerator:
-    """Fast synthetic data generator - supports both sync and async modes."""
 
     def __init__(self, config: GenerationConfig):
         self.config = config
 
-        # Use sync or async client based on mode
         if config.sync_mode:
             self.sync_client = OpenAI(
                 api_key=config.api_key,
@@ -249,7 +226,7 @@ class FastSyntheticGenerator:
                 api_key=config.api_key,
                 base_url=config.base_url,
                 timeout=120.0,
-                max_retries=0,  # Handle retries manually
+                max_retries=0,
             )
 
         self.generated = 0
@@ -257,7 +234,6 @@ class FastSyntheticGenerator:
         self.rejected = 0
 
     def _call_api_sync(self, prompt: str) -> list[dict]:
-        """Synchronous API call."""
         try:
             response = self.sync_client.chat.completions.create(
                 model=self.config.model,
@@ -269,8 +245,7 @@ class FastSyntheticGenerator:
                     {"role": "user", "content": prompt},
                 ],
                 temperature=self.config.temperature,
-                # max_tokens=self.config.max_tokens,  # Added Token Limit
-                max_completion_tokens=self.config.max_tokens,  # Added Token Limit
+                max_completion_tokens=self.config.max_tokens,
                 response_format={"type": "json_object"},
             )
             return self._parse_result(response.choices[0].message.content)
@@ -279,11 +254,8 @@ class FastSyntheticGenerator:
             return []
 
     async def _call_api_async(self, prompt: str) -> list[dict]:
-        """Async API call with retries."""
         for attempt in range(self.config.max_retries):
             try:
-                # gpt-4o-mini needs more tokens for JSON output (typical Q&A: ~800 tokens each)
-                # For batch_size=5, we need at least 5000+ tokens
                 effective_max_tokens = self.config.max_tokens
                 if self.config.model == "gpt-4o-mini" and self.config.max_tokens < 4096:
                     effective_max_tokens = max(4096, self.config.batch_size * 1500)
@@ -316,19 +288,17 @@ class FastSyntheticGenerator:
                                 {"role": "user", "content": prompt},
                             ],
                             temperature=self.config.temperature,
-                            max_tokens=self.config.max_tokens,  # Added Token Limit
+                            max_tokens=self.config.max_tokens,
                             response_format={"type": "json_object"},
                         ),
                         timeout=120.0,
                     )
 
-                # Debug: Check response content
                 content = response.choices[0].message.content
                 if not content or content.strip() == "":
                     logger.warning(
                         f"Empty response content. Finish reason: {response.choices[0].finish_reason}"
                     )
-                    # For gpt-4o-mini, sometimes content is in different location
                     if (
                         hasattr(response.choices[0].message, "refusal")
                         and response.choices[0].message.refusal
@@ -336,7 +306,7 @@ class FastSyntheticGenerator:
                         logger.warning(
                             f"Model refusal: {response.choices[0].message.refusal}"
                         )
-                    continue  # Retry
+                    continue
 
                 return self._parse_result(content)
 
@@ -352,15 +322,12 @@ class FastSyntheticGenerator:
         return []
 
     def _parse_result(self, result_text: str) -> list[dict]:
-        """Parse API result with improved key detection."""
         try:
             result = json.loads(result_text)
 
-            # Case 1: Direct array of Q&A pairs
             if isinstance(result, list):
                 return result
 
-            # Case 2: Object with nested array - try common keys first
             if isinstance(result, dict):
                 # Try explicit keys first
                 for key in [
@@ -389,28 +356,24 @@ class FastSyntheticGenerator:
                             logger.info(f"Found Q&A data under key: '{key}'")
                             return value
 
-                # Last resort: log the actual keys for debugging
                 logger.warning(
                     f"JSON parsed but no Q&A found. Keys: {list(result.keys())}"
                 )
-                # Log first 500 chars for debugging
                 logger.debug(f"Response preview: {result_text[:500]}")
 
         except json.JSONDecodeError as e:
             logger.warning(f"Failed to parse JSON response: {e}")
-            # Try to extract JSON from markdown code block
             json_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", result_text)
             if json_match:
                 try:
                     extracted = json.loads(json_match.group(1))
                     logger.info("Extracted JSON from code block")
-                    return self._parse_result(json.dumps(extracted))  # Re-parse
+                    return self._parse_result(json.dumps(extracted))
                 except json.JSONDecodeError:
                     pass
         return []
 
     def format_sample(self, question: str, answer: str) -> dict:
-        """Format as SFT sample."""
         return {
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -420,7 +383,6 @@ class FastSyntheticGenerator:
         }
 
     def _prepare_batches(self, processed_batches: set) -> list[tuple]:
-        """Prepare batch tasks for processing."""
         batch_size = self.config.batch_size
         total_topics = len(MEDICAL_TOPICS)
         total_batches_needed = max(1, self.config.num_samples_to_generate // batch_size)
@@ -442,7 +404,6 @@ class FastSyntheticGenerator:
         return batch_tasks
 
     def _process_qa_pairs(self, qa_pairs: list[dict]) -> list[dict]:
-        """Process and validate Q&A pairs."""
         results = []
         for qa in qa_pairs:
             question = qa.get("question", "")
@@ -456,7 +417,6 @@ class FastSyntheticGenerator:
         return results
 
     def _load_checkpoint(self, checkpoint_path: Path) -> list:
-        """Load checkpoint if exists. Returns list of samples only."""
         all_samples = []
         if checkpoint_path.exists():
             with open(checkpoint_path, "r", encoding="utf-8") as f:
@@ -493,13 +453,11 @@ class FastSyntheticGenerator:
         logger.info(f"Output: {output_path}")
 
     def run_sync(self) -> None:
-        """Run generation in synchronous mode - more stable but slower."""
         output_path = Path(self.config.output_file)
         checkpoint_path = Path(self.config.checkpoint_file)
 
         all_samples = self._load_checkpoint(checkpoint_path)
 
-        # Calculate how many more samples needed
         samples_needed = self.config.num_samples_to_generate - len(all_samples)
         if samples_needed <= 0:
             logger.info(
@@ -508,9 +466,7 @@ class FastSyntheticGenerator:
             self._save_output(output_path, checkpoint_path, all_samples)
             return
 
-        batch_tasks = self._prepare_batches(
-            set()
-        )  # Generate all batches, we'll stop when we have enough
+        batch_tasks = self._prepare_batches(set())
 
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -527,28 +483,24 @@ class FastSyntheticGenerator:
                 results = self._process_qa_pairs(qa_pairs)
                 all_samples.extend(results)
 
-                # Only save actual samples, not batch markers
                 for sample in results:
                     checkpoint_f.write(json.dumps(sample, ensure_ascii=False) + "\n")
                 checkpoint_f.flush()
 
-                # Stop if we have enough samples
                 if len(all_samples) >= self.config.num_samples_to_generate:
                     logger.info(f"Reached target: {len(all_samples)} samples")
                     break
 
-                time.sleep(0.3)  # Small delay to avoid rate limits
+                time.sleep(0.3)
 
         self._save_output(output_path, checkpoint_path, all_samples)
 
     async def run_async(self) -> None:
-        """Run generation in async mode with realtime checkpointing to prevent data loss."""
         output_path = Path(self.config.output_file)
         checkpoint_path = Path(self.config.checkpoint_file)
 
         all_samples = self._load_checkpoint(checkpoint_path)
 
-        # Calculate how many more samples needed
         samples_needed = self.config.num_samples_to_generate - len(all_samples)
         if samples_needed <= 0:
             logger.info(
@@ -557,11 +509,10 @@ class FastSyntheticGenerator:
             self._save_output(output_path, checkpoint_path, all_samples)
             return
 
-        # Calculate batches needed based on remaining samples
         batches_needed = max(
             1, (samples_needed + self.config.batch_size - 1) // self.config.batch_size
         )
-        batch_tasks = self._prepare_batches(set())[:batches_needed]  # Limit batches
+        batch_tasks = self._prepare_batches(set())[:batches_needed]
 
         semaphore = asyncio.Semaphore(self.config.max_concurrent_requests)
 
@@ -580,7 +531,6 @@ class FastSyntheticGenerator:
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         tasks = [process_batch(t, s, i, bid) for t, s, i, bid in batch_tasks]
 
-        # Use as_completed to save as we go (Prevents data loss on crash)
         with open(checkpoint_path, "a", encoding="utf-8") as checkpoint_f:
             for future in tqdm_asyncio.as_completed(tasks, desc="Generating (Async)"):
                 batch_id, samples = await future
@@ -590,7 +540,6 @@ class FastSyntheticGenerator:
 
                 all_samples.extend(samples)
 
-                # Only save actual samples, not batch markers
                 for sample in samples:
                     checkpoint_f.write(json.dumps(sample, ensure_ascii=False) + "\n")
                 checkpoint_f.flush()  # Force write to disk
@@ -598,9 +547,6 @@ class FastSyntheticGenerator:
         self._save_output(output_path, checkpoint_path, all_samples)
 
 
-# ==============================================================================
-# Main
-# ==============================================================================
 def main():
     parser = argparse.ArgumentParser(description="Generate synthetic medical Q&A data")
     parser.add_argument("--output", "-o", default="data/synthetic/sft_synthetic.jsonl")
@@ -634,7 +580,7 @@ def main():
         batch_size=args.batch_size,
         max_concurrent_requests=args.max_concurrent,
         temperature=args.temperature,
-        max_tokens=args.max_tokens,  # Configurable token limit
+        max_tokens=args.max_tokens,
         num_samples_to_generate=args.num_samples,
         output_file=args.output,
         sync_mode=args.sync_mode,

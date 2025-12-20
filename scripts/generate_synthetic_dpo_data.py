@@ -1,11 +1,4 @@
 """
-Synthetic DPO Data Generation for ViMed-Assistant.
-
-Generate DPO (Direct Preference Optimization) data with:
-- prompt: Medical questions (mixed with subtle jailbreak/harmful questions)
-- chosen: Professional, safe, ethical responses (concise, factual)
-- rejected: LONGER responses (verbose, misleading, hallucinated, typos, etc.)
-
 Usage:
     uv run scripts/generate_synthetic_dpo_data.py \
         --provider openai \
@@ -97,7 +90,6 @@ class DPOGenerationConfig:
 # DPO Topic Categories
 # ==============================================================================
 
-# Mix of normal medical topics + subtle harmful/jailbreak categories
 DPO_TOPICS = [
     # === Normal Medical Knowledge ===
     ("Y học thông thường", "Bệnh tiểu đường và cách kiểm soát đường huyết"),
@@ -223,10 +215,6 @@ LƯU Ý: Mỗi sample PHẢI là một dòng JSON riêng biệt, KHÔNG có mark
 
 
 def validate_dpo_sample(sample: dict) -> tuple[bool, str]:
-    """
-    Validate DPO sample.
-    Returns (is_valid, reason).
-    """
     prompt = sample.get("prompt", "")
     chosen = sample.get("chosen", "")
     rejected = sample.get("rejected", "")
@@ -239,14 +227,12 @@ def validate_dpo_sample(sample: dict) -> tuple[bool, str]:
     if len(rejected) < 50:
         return False, "rejected too short"
 
-    # CRITICAL: rejected MUST be longer than chosen (our main requirement)
     if len(rejected) <= len(chosen):
         return (
             False,
             f"rejected ({len(rejected)}) not longer than chosen ({len(chosen)})",
         )
 
-    # Rejected should be at least 1.2x longer (some tolerance)
     if len(rejected) < len(chosen) * 1.2:
         return (
             False,
@@ -257,17 +243,11 @@ def validate_dpo_sample(sample: dict) -> tuple[bool, str]:
 
 
 def extract_jsonl_samples(text: str) -> list[dict]:
-    """
-    Extract JSONL samples from text.
-    Handles various formats: pure JSONL, markdown code blocks, etc.
-    """
     samples = []
 
-    # Remove markdown code blocks if present
     text = re.sub(r"```(?:json|jsonl)?\s*", "", text)
     text = re.sub(r"```", "", text)
 
-    # Try to parse each line as JSON
     for line in text.strip().split("\n"):
         line = line.strip()
         if not line or line.startswith("#"):
@@ -283,7 +263,6 @@ def extract_jsonl_samples(text: str) -> list[dict]:
             ):
                 samples.append(obj)
         except json.JSONDecodeError:
-            # Try to extract JSON object from line
             match = re.search(
                 r'\{[^{}]*"prompt"[^{}]*"chosen"[^{}]*"rejected"[^{}]*\}', line
             )
@@ -294,7 +273,6 @@ def extract_jsonl_samples(text: str) -> list[dict]:
                 except json.JSONDecodeError:
                     continue
 
-    # If no samples found, try parsing as JSON array
     if not samples:
         try:
             arr = json.loads(text)
@@ -311,11 +289,7 @@ def extract_jsonl_samples(text: str) -> list[dict]:
 # ==============================================================================
 # Generator
 # ==============================================================================
-
-
 class DPOSyntheticGenerator:
-    """DPO Synthetic Data Generator with sync/async support."""
-
     def __init__(self, config: DPOGenerationConfig):
         self.config = config
 
@@ -323,7 +297,7 @@ class DPOSyntheticGenerator:
             self.sync_client = OpenAI(
                 api_key=config.api_key,
                 base_url=config.base_url,
-                timeout=180.0,  # Longer timeout for DPO (more content)
+                timeout=180.0,
                 max_retries=config.max_retries,
             )
         else:
@@ -336,17 +310,15 @@ class DPOSyntheticGenerator:
 
         self.generated = 0
         self.accepted = 0
-        self.rejected_count = 0  # Renamed to avoid confusion with 'rejected' field
+        self.rejected_count = 0
 
     def _call_api_sync(self, prompt: str) -> list[dict]:
-        """Synchronous API call for DPO generation."""
         try:
             messages = [
                 {"role": "system", "content": DPO_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
             ]
 
-            # deepseek-reasoner doesn't support system messages
             if self.config.model == "deepseek-reasoner":
                 messages = [
                     {"role": "user", "content": f"{DPO_SYSTEM_PROMPT}\n\n{prompt}"},
@@ -367,7 +339,6 @@ class DPOSyntheticGenerator:
             return []
 
     async def _call_api_async(self, prompt: str) -> list[dict]:
-        """Async API call with retries."""
         for attempt in range(self.config.max_retries):
             try:
                 messages = [
@@ -410,7 +381,6 @@ class DPOSyntheticGenerator:
         return []
 
     def _process_samples(self, samples: list[dict]) -> list[dict]:
-        """Validate and process DPO samples."""
         valid_samples = []
 
         for sample in samples:
@@ -427,18 +397,9 @@ class DPOSyntheticGenerator:
         return valid_samples
 
     def _prepare_batches(self, multiplier: float = 2.0) -> list[tuple]:
-        """
-        Prepare batch tasks from topics.
-
-        Args:
-            multiplier: Factor to account for LLM not always returning full batch_size.
-                       Default 2.0 means we prepare 2x more batches than theoretically needed.
-        """
         batch_size = self.config.batch_size
         total_topics = len(DPO_TOPICS)
 
-        # Account for LLM often returning fewer samples than requested
-        # Multiply by factor to ensure we have enough batches
         total_batches_needed = max(
             1, int(self.config.num_samples_to_generate / batch_size * multiplier)
         )
@@ -452,7 +413,6 @@ class DPOSyntheticGenerator:
                 batch_id = f"{category}:{topic}:{batch_idx}"
                 batch_tasks.append((category, topic, batch_idx, batch_id))
 
-        # Shuffle to mix topics
         random.shuffle(batch_tasks)
 
         logger.info(
@@ -462,7 +422,6 @@ class DPOSyntheticGenerator:
         return batch_tasks
 
     def _load_checkpoint(self, checkpoint_path: Path) -> list[dict]:
-        """Load checkpoint if exists."""
         all_samples = []
         if checkpoint_path.exists():
             with open(checkpoint_path, "r", encoding="utf-8") as f:
@@ -482,7 +441,6 @@ class DPOSyntheticGenerator:
     def _save_output(
         self, output_path: Path, checkpoint_path: Path, all_samples: list[dict]
     ) -> None:
-        """Save final output and print stats."""
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(output_path, "w", encoding="utf-8") as f:
@@ -492,7 +450,6 @@ class DPOSyntheticGenerator:
         if checkpoint_path.exists():
             checkpoint_path.unlink()
 
-        # Calculate stats
         chosen_lengths = [len(s["chosen"]) for s in all_samples]
         rejected_lengths = [len(s["rejected"]) for s in all_samples]
         ratios = [
@@ -525,7 +482,6 @@ class DPOSyntheticGenerator:
         logger.info(f"Output: {output_path}")
 
     def run_sync(self) -> None:
-        """Run generation in synchronous mode."""
         output_path = Path(self.config.output_file)
         checkpoint_path = Path(self.config.checkpoint_file)
 
@@ -569,7 +525,6 @@ class DPOSyntheticGenerator:
         self._save_output(output_path, checkpoint_path, all_samples)
 
     async def run_async(self) -> None:
-        """Run generation in async mode with realtime checkpointing."""
         output_path = Path(self.config.output_file)
         checkpoint_path = Path(self.config.checkpoint_file)
 
@@ -581,7 +536,6 @@ class DPOSyntheticGenerator:
             self._save_output(output_path, checkpoint_path, all_samples)
             return
 
-        # Prepare more batches than theoretically needed (LLM often returns fewer samples)
         batch_tasks = self._prepare_batches(multiplier=3.0)
 
         semaphore = asyncio.Semaphore(self.config.max_concurrent_requests)
@@ -600,12 +554,10 @@ class DPOSyntheticGenerator:
 
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Process in chunks to allow early stopping when target reached
         chunk_size = min(self.config.max_concurrent_requests * 2, len(batch_tasks))
 
         with open(checkpoint_path, "a", encoding="utf-8") as checkpoint_f:
             for chunk_start in range(0, len(batch_tasks), chunk_size):
-                # Check if we already have enough
                 if len(all_samples) >= self.config.num_samples_to_generate:
                     logger.info(f"Reached target: {len(all_samples)} samples")
                     break
@@ -629,16 +581,10 @@ class DPOSyntheticGenerator:
                         )
                     checkpoint_f.flush()
 
-                    # Early exit if we have enough
                     if len(all_samples) >= self.config.num_samples_to_generate:
                         break
 
         self._save_output(output_path, checkpoint_path, all_samples)
-
-
-# ==============================================================================
-# Main
-# ==============================================================================
 
 
 def main():
@@ -709,7 +655,6 @@ Examples:
 
     args = parser.parse_args()
 
-    # Default models
     default_model = "deepseek-chat" if args.provider == "deepseek" else "gpt-4o-mini"
 
     config = DPOGenerationConfig(
